@@ -1,0 +1,18 @@
+{
+  "teamCode": "EQUIPO_A",
+  "payer": {
+    "customerCode": "CLI-0001",
+    "fullName": "Ana López",
+    "taxId": "CF"
+  },
+  "amount": {
+    "valueInCents": 15075,
+    "currency": "GTQ"
+  },
+  "transactionDate": "2026-10-01T16:15:00Z",
+  "channel": "CASH",
+  "description": "Servicio de agua 2026-09",
+  "metadata": {
+    "sourceSystem": "laravel-oficina-agua"
+  }
+}

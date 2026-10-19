@@ -1,0 +1,183 @@
+# =============================================================================
+# Simuladores de banco y ERP — Clase 13 (AWS Lambda + API Gateway HTTP API + DynamoDB)
+# -----------------------------------------------------------------------------
+# Capa: infraestructura como código (AWS SAM = extensión de CloudFormation).
+# Este archivo crea TODO lo necesario con un solo comando (`sam deploy`):
+#   - 1 tabla DynamoDB (on-demand)
+#   - 1 API Gateway HTTP API con stage "prod"
+#   - 2 Lambdas (bank-sim y erp-sim) con su rol IAM de mínimo privilegio
+#   - 2 log groups con retención de 14 días
+# =============================================================================
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Simuladores de banco y ERP para la Feature 3 (pagos por colas)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+  DelayMaxMs:
+    Type: Number
+    Default: 3000
+    Description: Retardo aleatorio máximo en milisegundos (el mínimo es 0)
+  ErrorRate:
+    Type: String
+    Default: '0.2'
+    Description: Probabilidad de error transitorio (0.2 = 1 de cada 5 en promedio)
+  AllowScenarioHeader:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Respetar el header X-Simulation-Scenario (poner false el día de la demo)
+  BasicAuthUsername:
+    Type: String
+    Default: equipo
+    Description: Usuario HTTP Basic Auth (compartido por banco y ERP)
+  BasicAuthPassword:
+    Type: String
+    NoEcho: true
+    Description: Clave HTTP Basic Auth (compartida). Entregar a los equipos por canal privado.
+    MinLength: 8
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]          # Graviton: ~20 % más barato que x86_64
+    MemorySize: 256
+    Timeout: 10                     # retardo máximo 3 s + DynamoDB; API Gateway corta a 30 s
+    CodeUri: ./
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref PaymentsTable
+        DELAY_MIN_MS: '0'
+        DELAY_MAX_MS: !Ref DelayMaxMs
+        ERROR_RATE: !Ref ErrorRate
+        RETRY_AFTER_SECONDS: '2'
+        ALLOW_SCENARIO_HEADER: !Ref AllowScenarioHeader
+        BASIC_AUTH_USERNAME: !Ref BasicAuthUsername
+        BASIC_AUTH_PASSWORD: !Ref BasicAuthPassword
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Datos: una sola tabla para ambos destinos. pk = "BANK#EQA-000123" / "ERP#EQA-000123"
+  # ---------------------------------------------------------------------------
+  PaymentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-pagos'
+      BillingMode: PAY_PER_REQUEST    # on-demand: sin capacidad que calcular, costo ~0 en clase
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # ---------------------------------------------------------------------------
+  # HTTP API: más simple y barata que REST API. Throttling como protección de costos
+  # ante un bucle de reintentos sin backoff (genera 429 reales de API Gateway).
+  # ---------------------------------------------------------------------------
+  PaymentsApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+      DefaultRouteSettings:
+        ThrottlingRateLimit: 20
+        ThrottlingBurstLimit: 40
+
+  # ---------------------------------------------------------------------------
+  # Banco simulado
+  # ---------------------------------------------------------------------------
+  BankSimLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-bank-sim'
+      RetentionInDays: 14
+
+  BankSimFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bank-sim'
+      Handler: src/handlers/bank.handler
+      LoggingConfig:
+        LogGroup: !Ref BankSimLogGroup
+      Environment:
+        Variables:
+          DESTINATION: BANK
+      # Mínimo privilegio: solo leer y escribir en SU tabla. Sin Scan ni DeleteItem.
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem, dynamodb:GetItem]
+              Resource: !GetAtt PaymentsTable.Arn
+      Events:
+        CreatePayment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: POST
+            Path: /bank/v1/payments
+        GetPayment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: GET
+            Path: /bank/v1/payments/{idempotencyKey}
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: GET
+            Path: /bank/v1/health
+
+  # ---------------------------------------------------------------------------
+  # ERP municipal simulado
+  # ---------------------------------------------------------------------------
+  ErpSimLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-erp-sim'
+      RetentionInDays: 14
+
+  ErpSimFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-erp-sim'
+      Handler: src/handlers/erp.handler
+      LoggingConfig:
+        LogGroup: !Ref ErpSimLogGroup
+      Environment:
+        Variables:
+          DESTINATION: ERP
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem, dynamodb:GetItem]
+              Resource: !GetAtt PaymentsTable.Arn
+      Events:
+        CreatePayment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: POST
+            Path: /erp/v1/pagos
+        GetPayment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: GET
+            Path: /erp/v1/pagos/{numeroDocumento}
+        Health:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PaymentsApi
+            Method: GET
+            Path: /erp/v1/salud
+
+Outputs:
+  ApiBaseUrl:
+    Description: URL base para los equipos (BANK_API_URL y ERP_API_URL)
+    Value: !Sub 'https://${PaymentsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+  TableName:
+    Description: Tabla DynamoDB con los pagos registrados
+    Value: !Ref PaymentsTable

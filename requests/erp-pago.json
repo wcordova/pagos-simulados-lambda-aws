@@ -1,0 +1,24 @@
+{
+  "equipo": "EQUIPO_A",
+  "documento_origen": {
+    "tipo": "RECIBO_CAJA",
+    "numero": "EQA-000123",
+    "fecha_emision": "2026-10-01"
+  },
+  "contribuyente": {
+    "codigo_cliente": "CLI-0001",
+    "codigo_contador": "MTR-00001",
+    "nit": "CF"
+  },
+  "periodo_fiscal": {
+    "anio": 2026,
+    "mes": 9
+  },
+  "forma_pago": "EFECTIVO",
+  "fecha_pago": "2026-10-01T10:15:00-06:00",
+  "total": "150.75",
+  "detalle": [
+    { "rubro": "AGUA_POTABLE", "descripcion": "Consumo septiembre 2026", "monto": "140.75" },
+    { "rubro": "MORA", "monto": "10.00" }
+  ]
+}
