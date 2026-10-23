@@ -6,7 +6,7 @@
 //   GET  /erp/v1/salud                       disponibilidad
 //
 // Mismo flujo que el banco; cambian los nombres (español, snake_case) y el formato de error.
-import { basicAuthChallengeHeaders, verifyBasicAuth } from '../lib/auth.mjs';
+import { verifyApiKey } from '../lib/auth.mjs';
 import { getCorrelationId, json, log, parseJsonBody } from '../lib/http.mjs';
 import { buildKey, dynamoRepository } from '../lib/repository.mjs';
 import {
@@ -94,21 +94,20 @@ export const createHandler = ({
   repository = dynamoRepository,
   simulation = createSimulation(),
   now = () => new Date(),
-  authenticate = verifyBasicAuth,
+  authenticate = verifyApiKey,
 } = {}) => {
   const health = () =>
     json(200, { estado: 'ARRIBA', destino: DESTINATION, version: VERSION, fecha_hora: toIsoSeconds(now()) });
 
-  const unauthorized = (correlationId, reason) =>
+  // 403: mismo status que API Gateway cuando falta o falla la API key (contrato OpenAPI).
+  const forbidden = (correlationId, reason) =>
     erpError(
-      401,
-      'NO_AUTORIZADO',
+      403,
+      'PROHIBIDO',
       reason === 'misconfigured'
         ? 'Autenticación no configurada en el simulador'
-        : 'Credenciales Basic Auth ausentes o inválidas',
+        : 'API key ausente o inválida (header x-api-key)',
       correlationId,
-      {},
-      basicAuthChallengeHeaders(),
     );
 
   const createPayment = async (event, correlationId) => {
@@ -211,7 +210,7 @@ export const createHandler = ({
       if (needsAuth) {
         const auth = authenticate(event);
         if (!auth.ok) {
-          response = unauthorized(correlationId, auth.reason);
+          response = forbidden(correlationId, auth.reason);
         }
       }
 

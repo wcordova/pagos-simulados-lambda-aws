@@ -24,7 +24,7 @@ Consumidor del equipo ──HTTPS──► API Gateway HTTP API (stage prod)
 
 Orden en cada `POST` (y en los `GET` de pagos):
 
-1. **Basic Auth** → sin header o credenciales incorrectas: `401` (no se reintenta; corregir configuración).
+1. **API key (`x-api-key`)** → sin header o llave incorrecta: `403` (no se reintenta; corregir configuración).
 2. **Retardo aleatorio de 0 a 3 s** (`DELAY_MIN_MS` / `DELAY_MAX_MS`).
 3. **Validación** del body → `400` si no cumple el contrato (no se reintenta).
 4. **Error transitorio aleatorio** con probabilidad `ERROR_RATE = 0.2` (en promedio 1 de cada 5):
@@ -38,31 +38,29 @@ Orden en cada `POST` (y en los `GET` de pagos):
 |---|---|---|
 | `201` | Sí | Confirmar el mensaje y guardar el comprobante |
 | `409` duplicado | Sí (antes) | Confirmar el mensaje: ya estaba entregado |
-| `401` | No | Dead-letter + revisar usuario/clave Basic Auth |
+| `403` | No | Dead-letter + revisar `x-api-key` |
 | `400` | No | Dead-letter (error de mapeo) |
 | `500` / `503` | No | Reintentar con backoff (respetar `Retry-After`) |
 | Timeout del cliente (retardo cercano a 3 s) | Puede que sí | Reintentar: si ya se guardó, recibirá `409` |
 
-### Autenticación (HTTP Basic Auth)
+### Autenticación (`x-api-key`)
 
-Misma pareja usuario/clave para banco y ERP (variables `BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWORD`).
+Misma llave para banco y ERP (variable de entorno `API_KEY`, parámetro SAM `ApiKey`).
+Coincide con el esquema `ApiKeyAuth` del OpenAPI de la Clase 12.
 
 ```http
-Authorization: Basic base64(usuario:clave)
+x-api-key: <llave-entregada>
 ```
 
-Ejemplo con usuario `equipo` y clave `secreto123`:
+Ejemplo:
 
 ```bash
-# ZXF1aXBvOnNlY3JldG8xMjM= = base64("equipo:secreto123")
-curl -u equipo:secreto123 ...
-# o:
-curl -H "Authorization: Basic ZXF1aXBvOnNlY3JldG8xMjM=" ...
+curl -H "x-api-key: TuClaveSegura1" ...
 ```
 
 - `/bank/v1/health` y `/erp/v1/salud` **no** piden autenticación.
-- Basic Auth solo codifica en base64: la seguridad real la da el **HTTPS** de API Gateway.
-- Entregar usuario y clave a los equipos por un canal privado (no por el chat general del curso).
+- La seguridad real la da el **HTTPS** de API Gateway.
+- Entregar la llave a los equipos por un canal privado (no por el chat general del curso).
 
 > **¿Por qué "1 de cada 5" es una probabilidad y no un contador?** Lambda es **sin estado**:
 > puede haber varios entornos atendiendo en paralelo y cada uno tendría su propio contador
@@ -80,11 +78,11 @@ URL base (output `ApiBaseUrl`): `https://{apiId}.execute-api.us-east-1.amazonaws
 
 | Método | Ruta | Auth | Llave de unicidad |
 |---|---|---|---|
-| POST | `/bank/v1/payments` | Basic | header `Idempotency-Key` |
-| GET | `/bank/v1/payments/{idempotencyKey}` | Basic | — |
+| POST | `/bank/v1/payments` | `x-api-key` | header `Idempotency-Key` |
+| GET | `/bank/v1/payments/{idempotencyKey}` | `x-api-key` | — |
 | GET | `/bank/v1/health` | No | — |
-| POST | `/erp/v1/pagos` | Basic | body `documento_origen.numero` |
-| GET | `/erp/v1/pagos/{numeroDocumento}` | Basic | — |
+| POST | `/erp/v1/pagos` | `x-api-key` | body `documento_origen.numero` |
+| GET | `/erp/v1/pagos/{numeroDocumento}` | `x-api-key` | — |
 | GET | `/erp/v1/salud` | No | — |
 
 El mismo id (por ejemplo `EQA-000123`) puede registrarse una vez en el banco y una vez en el
@@ -94,7 +92,7 @@ ERP: la llave en DynamoDB incluye el destino (`BANK#EQA-000123`, `ERP#EQA-000123
 
 | Especificación completa | Esta versión |
 |---|---|
-| API Gateway **REST** con API key por equipo | **HTTP API** + **Basic Auth** validado dentro de cada Lambda (misma clave para todos). El `x-api-key` del contrato OpenAPI se ignora |
+| API Gateway **REST** con API key **por equipo** | **HTTP API** + `x-api-key` validado dentro de cada Lambda (**misma** clave para todos) |
 | `409 PAYMENT_ID_REUSED` si cambian los datos | Cualquier id repetido → `409` duplicado |
 | Reglas de negocio `422` | No se implementan |
 | Escenarios `SLOW`, `TIMEOUT`, `LOST_ACK`, `RATE_LIMIT` | Retardo 0–3 s + error 500/503 aleatorio. Los `429` reales los genera el throttling de API Gateway (20 req/s) |
@@ -116,7 +114,7 @@ pagos-simulados-lambda/
 │   │   ├── bank.mjs          # Lambda del banco (rutas /bank/v1/*)
 │   │   └── erp.mjs           # Lambda del ERP (rutas /erp/v1/*)
 │   └── lib/
-│       ├── auth.mjs          # HTTP Basic Auth (usuario:clave en env)
+│       ├── auth.mjs          # Validación del header x-api-key
 │       ├── http.mjs          # respuestas JSON, headers, logs
 │       ├── simulation.mjs    # retardo aleatorio + error 1 de cada 5
 │       ├── repository.mjs    # DynamoDB: PutItem condicional y GetItem
@@ -142,13 +140,13 @@ npm test
 # Desplegar en AWS (región us-east-1)
 sam build
 sam deploy --guided            # primera vez: stack "pagos-simulados", región us-east-1
-                               # pide BasicAuthUsername / BasicAuthPassword (mín. 8 caracteres)
+                               # pide ApiKey (mín. 8 caracteres)
 sam deploy                     # siguientes veces
 
 # Cambiar el comportamiento o la clave sin tocar código
 sam deploy --parameter-overrides \
   ErrorRate=0.3 DelayMaxMs=3000 AllowScenarioHeader=false \
-  BasicAuthUsername=equipo BasicAuthPassword='TuClaveSegura1'
+  ApiKey='TuClaveSegura1'
 
 # Ver logs en vivo durante la clase
 sam logs --stack-name pagos-simulados --tail
@@ -161,29 +159,31 @@ sam delete --stack-name pagos-simulados
 
 ```bash
 export API=https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/prod
-export USER=equipo
-export PASS='TuClaveSegura1'   # la misma del deploy
+export API_KEY='TuClaveSegura1'   # la misma del deploy
 
 # Banco: registrar (repetir el comando para ver el 409 o un 500/503 aleatorio)
-curl -i -u "$USER:$PASS" -X POST "$API/bank/v1/payments" \
+curl -i -X POST "$API/bank/v1/payments" \
+  -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: EQA-000123" \
   -d @requests/bank-payment.json
 
 # Banco: forzar éxito sin retardo
-curl -i -u "$USER:$PASS" -X POST "$API/bank/v1/payments" \
+curl -i -X POST "$API/bank/v1/payments" \
+  -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: EQA-000124" \
   -H "X-Simulation-Scenario: SUCCESS" \
   -d @requests/bank-payment.json
 
 # Banco: consultar
-curl -i -u "$USER:$PASS" "$API/bank/v1/payments/EQA-000123"
+curl -i -H "x-api-key: $API_KEY" "$API/bank/v1/payments/EQA-000123"
 
 # ERP: registrar y consultar
-curl -i -u "$USER:$PASS" -X POST "$API/erp/v1/pagos" \
+curl -i -X POST "$API/erp/v1/pagos" \
+  -H "x-api-key: $API_KEY" \
   -H "Content-Type: application/json" -d @requests/erp-pago.json
-curl -i -u "$USER:$PASS" "$API/erp/v1/pagos/EQA-000123"
+curl -i -H "x-api-key: $API_KEY" "$API/erp/v1/pagos/EQA-000123"
 
 # Salud (sin autenticación)
 curl -i "$API/bank/v1/health"
@@ -213,8 +213,8 @@ sam local start-api --env-vars env.local.json
 
 ## Configuración para los equipos (Spring Boot + Feign)
 
-El contrato OpenAPI declara `x-api-key`, pero este despliegue usa **Basic Auth**. Hay que enviar
-el header `Authorization` (el `x-api-key` del generador se ignora).
+El OpenAPI declara `ApiKeyAuth` con header `x-api-key`. El cliente generado ya envía ese header;
+solo hay que configurar el valor de la llave.
 
 ```yaml
 bank:
@@ -222,44 +222,18 @@ bank:
 erp:
   url: ${ERP_API_URL}    # la misma URL base
 
-# Si el cliente generado exige x-api-key, cualquier valor sirve (el simulador lo ignora)
-bankpaymentssimulator.security.apiKeyAuth.key: ${BANK_API_KEY:ignored}
-erppaymentssimulator.security.apiKeyAuth.key: ${ERP_API_KEY:ignored}
-
-# Basic Auth (mismo usuario/clave para banco y ERP)
-pagos:
-  basic-auth:
-    username: ${PAGOS_BASIC_USER}
-    password: ${PAGOS_BASIC_PASS}
-```
-
-Ejemplo de interceptor Feign:
-
-```java
-@Component
-public class BasicAuthRequestInterceptor implements RequestInterceptor {
-    @Value("${pagos.basic-auth.username}")
-    private String username;
-    @Value("${pagos.basic-auth.password}")
-    private String password;
-
-    @Override
-    public void apply(RequestTemplate template) {
-        String token = Base64.getEncoder()
-            .encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-        template.header("Authorization", "Basic " + token);
-    }
-}
+bankpaymentssimulator.security.apiKeyAuth.key: ${BANK_API_KEY}
+erppaymentssimulator.security.apiKeyAuth.key: ${ERP_API_KEY}
 ```
 
 Timeouts recomendados: connect 2 s, read 3 s. Con un retardo de hasta 3 s, algunas peticiones
 harán timeout del lado del cliente **después** de que el pago se guardó: el reintento recibirá
-`409` y debe tratarse como éxito. El `401` **no** se reintenta.
+`409` y debe tratarse como éxito. El `403` **no** se reintenta.
 
 ## Seguridad y costos
 
-- **HTTPS** siempre (API Gateway no expone HTTP plano); Basic Auth depende de eso.
-- **Basic Auth** en la Lambda: sin usuario/clave correctos → `401`. `/health` y `/salud` públicos.
+- **HTTPS** siempre (API Gateway no expone HTTP plano).
+- **`x-api-key`** en la Lambda: sin llave correcta → `403` (`FORBIDDEN` / `PROHIBIDO`). `/health` y `/salud` públicos.
 - **IAM mínimo privilegio:** cada Lambda solo puede `PutItem` y `GetItem` sobre su tabla.
 - **Sin datos personales en BD ni logs:** no se guarda `fullName`, `taxId` ni `nit`.
 - La clave viaja como variable de entorno (`NoEcho` en el parámetro de SAM). Para producción

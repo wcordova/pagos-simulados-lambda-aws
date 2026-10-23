@@ -8,7 +8,7 @@
 // Flujo del POST:
 //   retardo 0–3 s → validar (400) → ¿error simulado? (500/503, NO guarda)
 //   → PutItem condicional → 201 (nuevo) | 409 DUPLICATE_PAYMENT (ya existía)
-import { basicAuthChallengeHeaders, verifyBasicAuth } from '../lib/auth.mjs';
+import { verifyApiKey } from '../lib/auth.mjs';
 import { getCorrelationId, getHeader, json, log, parseJsonBody } from '../lib/http.mjs';
 import { buildKey, dynamoRepository } from '../lib/repository.mjs';
 import { buildReceiptId, nextBusinessDay, toIsoSeconds } from '../lib/receipts.mjs';
@@ -78,22 +78,20 @@ export const createHandler = ({
   repository = dynamoRepository,
   simulation = createSimulation(),
   now = () => new Date(),
-  authenticate = verifyBasicAuth,
+  authenticate = verifyApiKey,
 } = {}) => {
   const health = () =>
     json(200, { status: 'UP', destination: DESTINATION, version: VERSION, timestamp: toIsoSeconds(now()) });
 
-  // 401 con WWW-Authenticate: el cliente (curl, navegador) sabe que debe reintentar con Basic.
-  const unauthorized = (correlationId, reason) =>
+  // 403: mismo status que API Gateway cuando falta o falla la API key (contrato OpenAPI).
+  const forbidden = (correlationId, reason) =>
     bankError(
-      401,
-      'UNAUTHORIZED',
+      403,
+      'FORBIDDEN',
       reason === 'misconfigured'
         ? 'Autenticación no configurada en el simulador'
-        : 'Credenciales Basic Auth ausentes o inválidas',
+        : 'API key ausente o inválida (header x-api-key)',
       correlationId,
-      {},
-      basicAuthChallengeHeaders(),
     );
 
   const createPayment = async (event, correlationId) => {
@@ -194,7 +192,7 @@ export const createHandler = ({
       if (needsAuth) {
         const auth = authenticate(event);
         if (!auth.ok) {
-          response = unauthorized(correlationId, auth.reason);
+          response = forbidden(correlationId, auth.reason);
         }
       }
 

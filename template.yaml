@@ -29,14 +29,10 @@ Parameters:
     Default: 'true'
     AllowedValues: ['true', 'false']
     Description: Respetar el header X-Simulation-Scenario (poner false el día de la demo)
-  BasicAuthUsername:
-    Type: String
-    Default: equipo
-    Description: Usuario HTTP Basic Auth (compartido por banco y ERP)
-  BasicAuthPassword:
+  ApiKey:
     Type: String
     NoEcho: true
-    Description: Clave HTTP Basic Auth (compartida). Entregar a los equipos por canal privado.
+    Description: Valor del header x-api-key (compartido por banco y ERP). Entregar a los equipos por canal privado.
     MinLength: 8
 
 Globals:
@@ -54,8 +50,7 @@ Globals:
         ERROR_RATE: !Ref ErrorRate
         RETRY_AFTER_SECONDS: '2'
         ALLOW_SCENARIO_HEADER: !Ref AllowScenarioHeader
-        BASIC_AUTH_USERNAME: !Ref BasicAuthUsername
-        BASIC_AUTH_PASSWORD: !Ref BasicAuthPassword
+        API_KEY: !Ref ApiKey
 
 Resources:
   # ---------------------------------------------------------------------------
